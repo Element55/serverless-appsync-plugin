@@ -378,7 +378,6 @@ class ServerlessAppsyncPlugin {
     configs.forEach((config, i) => {
       const logicalId = prefix + (i || "");
       const thisResolver = this.makeResolverResource(config, logicalId);
-      console.log("This resolver>", thisResolver, logicalId);
       resources = {
         ...resources,
         ...thisResolver
