@@ -171,10 +171,6 @@ class ServerlessAppsyncPlugin {
       .compiledCloudFormationTemplate.Outputs;
     Object.assign(outputs, this.getGraphQlApiOutputs(config));
     Object.assign(outputs, this.getApiKeyOutputs(config));
-    const p = path.join(process.cwd(), "appsync_resources.json");
-    const p2 = path.join(process.cwd(), "appsync_output.json");
-    fs.writeFileSync(p, JSON.stringify(resources));
-    fs.writeFileSync(p2, JSON.stringify(outputs));
   }
   getMultipleGraphQlApiEndpointResources(configs) {
     const prefix = "GraphQlApi";
@@ -384,7 +380,6 @@ class ServerlessAppsyncPlugin {
     const prefix = "GraphQlSchema";
     const graphqlPrefix = "GraphQlResolver";
     configs.forEach((config, i) => {
-      console.log("getMultipleResolverResources: schema>", config.schema);
       const logicalId = prefix + (i || "");
       const resolverLogicalId = graphqlPrefix + (i || "");
       const thisResolver = this.makeResolverResource(
@@ -406,10 +401,8 @@ class ServerlessAppsyncPlugin {
   }
   getResolverResources(config) {
     if (this.isConfiguringMultipleApis()) {
-      console.log("getResolverResources: beep1");
       return this.getMultipleResolverResources(config);
     }
-    console.log("getResolverResources: beep2");
     return this.makeResolverResource(config);
   }
   makeResolverResource(
@@ -430,9 +423,6 @@ class ServerlessAppsyncPlugin {
       const requestTemplate = fs.readFileSync(reqTemplPath, "utf8");
       const responseTemplate = fs.readFileSync(respTemplPath, "utf8");
 
-      console.log("makeResolverResource: request path>", reqTemplPath);
-      console.log("makeResolverResource: response path>", respTemplPath);
-      console.log("makeResolverResource: schemaName>", schemaName);
       return Object.assign({}, acc, {
         [`${resolverPrefix}${this.getCfnName(tpl.type)}${this.getCfnName(
           tpl.field
