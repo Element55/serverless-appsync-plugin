@@ -171,8 +171,6 @@ class ServerlessAppsyncPlugin {
       .compiledCloudFormationTemplate.Outputs;
     Object.assign(outputs, this.getGraphQlApiOutputs(config));
     Object.assign(outputs, this.getApiKeyOutputs(config));
-    const p = path.join(process.cwd(), "appsync_resources.json");
-    fs.writeFileSync(p, JSON.stringify(resources));
   }
   getMultipleGraphQlApiEndpointResources(configs) {
     const prefix = "GraphQlApi";
