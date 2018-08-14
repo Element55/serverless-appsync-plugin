@@ -83,8 +83,10 @@ const configureAPI = (config, provider, servicePath) => {
 };
 module.exports = (config, provider, servicePath) => {
   if (Array.isArray(config)) {
-    const newConfig = config.map(thisConfig => {
-      return configureAPI(thisConfig, provider, servicePath);
+    const newConfig = config.map((thisConfig, i) => {
+      let temp = configureAPI(thisConfig, provider, servicePath);
+      temp.index = i;
+      return temp;
     });
     return newConfig;
   }

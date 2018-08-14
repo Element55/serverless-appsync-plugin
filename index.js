@@ -7,7 +7,14 @@ const {
   buildASTSchema
 } = require("graphql");
 const getConfig = require("./get-config");
-
+const {
+  getGqlEndpointName,
+  getAPIKeyResourceName,
+  getGqlSchemaResourceName,
+  getDataSourceName,
+  getResolverName,
+  getGqlAPIUrl
+} = require("./nameutils");
 const MIGRATION_DOCS =
   "https://github.com/sid88in/serverless-appsync-plugin/blob/master/README.md#cfn-migration";
 
@@ -146,7 +153,6 @@ class ServerlessAppsyncPlugin {
         }
       });
   }
-
   addResources() {
     const config = this.loadConfig();
 
@@ -173,10 +179,9 @@ class ServerlessAppsyncPlugin {
     Object.assign(outputs, this.getApiKeyOutputs(config));
   }
   getMultipleGraphQlApiEndpointResources(configs) {
-    const prefix = "GraphQlApi";
     const resource = {};
-    configs.forEach((apiConfig, i) => {
-      const logicalId = apiConfig.logicalId || prefix + (i || "");
+    configs.forEach(apiConfig => {
+      const logicalId = getGqlEndpointName(apiConfig);
       resource[logicalId] = {
         Type: "AWS::AppSync::GraphQLApi",
         Properties: {
@@ -250,8 +255,8 @@ class ServerlessAppsyncPlugin {
   getMultipleApiKeyResources(configs) {
     const resources = {};
     const prefix = "GraphQlApiKeyDefault";
-    configs.forEach((config, i) => {
-      const logicalId = config.logicalId || prefix + (i || "");
+    configs.forEach(config => {
+      const logicalId = getAPIKeyResourceName(config);
       if (config.authenticationType !== "API_KEY") {
         return {};
       }
@@ -259,7 +264,7 @@ class ServerlessAppsyncPlugin {
       resources[logicalId] = {
         Type: "AWS::AppSync::ApiKey",
         Properties: {
-          ApiId: { "Fn::GetAtt": ["GraphQlApi" + (i || ""), "ApiId"] },
+          ApiId: { "Fn::GetAtt": [getGqlEndpointName(config), "ApiId"] },
           Description: "serverless-appsync-plugin: Default",
           Expires: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
         }
@@ -287,10 +292,10 @@ class ServerlessAppsyncPlugin {
   }
   getMultipleDataSourceResources(configs) {
     let resources = {};
-    configs.forEach((config, i) => {
+    configs.forEach(config => {
       resources = {
         ...resources,
-        ...this.makeDataSourceResource(config, i || "")
+        ...this.makeDataSourceResource(config)
       };
     });
     return resources;
@@ -303,11 +308,10 @@ class ServerlessAppsyncPlugin {
   }
   makeDataSourceResource(config, index = "") {
     return config.dataSources.reduce((acc, ds) => {
-      const graphqlLogicalId = "GraphQlApi" + index;
       const resource = {
         Type: "AWS::AppSync::DataSource",
         Properties: {
-          ApiId: { "Fn::GetAtt": [graphqlLogicalId, "ApiId"] },
+          ApiId: { "Fn::GetAtt": [getGqlEndpointName(config), "ApiId"] },
           Name: ds.name,
           Description: ds.description,
           Type: ds.type,
@@ -339,7 +343,8 @@ class ServerlessAppsyncPlugin {
           `Data Source Type not supported: '${ds.type}`
         );
       }
-      const resourceName = this.getDataSourceCfnName(ds.name) + (index || "");
+      const resourceName =
+        this.getDataSourceCfnName(config, ds.name) + (index || "");
       return Object.assign({}, acc, {
         [resourceName]: resource
       });
@@ -347,15 +352,13 @@ class ServerlessAppsyncPlugin {
   }
   getMultipleGraphQLSchemaResources(configs) {
     const resources = {};
-    const prefix = "GraphQlSchema";
-    configs.forEach((config, i) => {
-      let logicalId = config.logicalId || prefix + (i || "");
-      const graphqlLogicalId = "GraphQlApi" + (i || "");
+    configs.forEach(config => {
+      let logicalId = getGqlSchemaResourceName(config);
       resources[logicalId] = {
         Type: "AWS::AppSync::GraphQLSchema",
         Properties: {
           Definition: config.schema,
-          ApiId: { "Fn::GetAtt": [graphqlLogicalId, "ApiId"] }
+          ApiId: { "Fn::GetAtt": [getGqlEndpointName(config), "ApiId"] }
         }
       };
     });
@@ -377,21 +380,8 @@ class ServerlessAppsyncPlugin {
   }
   getMultipleResolverResources(configs) {
     let resources = {};
-    const prefix = "GraphQlSchema";
-    const graphqlPrefix = "GraphQlResolver";
-    configs.forEach((config, i) => {
-      const logicalId = prefix + (i || "");
-      const resolverLogicalId = graphqlPrefix + (i || "");
-      const thisResolver = this.makeResolverResource(
-        config,
-        logicalId,
-        resolverLogicalId,
-        i
-      );
-      fs.writeFileSync(
-        path.join(process.cwd(), logicalId + "resolver.json"),
-        JSON.stringify(thisResolver)
-      );
+    configs.forEach(config => {
+      const thisResolver = this.makeResolverResource(config);
       resources = {
         ...resources,
         ...thisResolver
@@ -405,12 +395,7 @@ class ServerlessAppsyncPlugin {
     }
     return this.makeResolverResource(config);
   }
-  makeResolverResource(
-    config,
-    schemaName = "GraphQlSchema",
-    resolverPrefix = "GraphQlResolver",
-    index = 0
-  ) {
+  makeResolverResource(config) {
     return config.mappingTemplates.reduce((acc, tpl) => {
       const reqTemplPath = path.join(
         config.mappingTemplatesLocation,
@@ -422,19 +407,22 @@ class ServerlessAppsyncPlugin {
       );
       const requestTemplate = fs.readFileSync(reqTemplPath, "utf8");
       const responseTemplate = fs.readFileSync(respTemplPath, "utf8");
-
+      const resolverPrefix = getResolverName(config);
       return Object.assign({}, acc, {
         [`${resolverPrefix}${this.getCfnName(tpl.type)}${this.getCfnName(
           tpl.field
         )}`]: {
           Type: "AWS::AppSync::Resolver",
-          DependsOn: schemaName,
+          DependsOn: getGqlSchemaResourceName(config),
           Properties: {
-            ApiId: { "Fn::GetAtt": ["GraphQlApi" + (index || ""), "ApiId"] },
+            ApiId: { "Fn::GetAtt": [getGqlEndpointName(config), "ApiId"] },
             TypeName: tpl.type,
             FieldName: tpl.field,
             DataSourceName: {
-              "Fn::GetAtt": [this.getDataSourceCfnName(tpl.dataSource), "Name"]
+              "Fn::GetAtt": [
+                this.getDataSourceCfnName(config, tpl.dataSource),
+                "Name"
+              ]
             },
             RequestMappingTemplate: this.processTemplate(
               requestTemplate,
@@ -452,12 +440,10 @@ class ServerlessAppsyncPlugin {
   getMultipleGraphQlApiOutputs() {
     const configs = this.loadConfig();
     const resources = {};
-    const prefix = "GraphQlApiUrl";
-    configs.forEach((config, i) => {
-      const urlLogicalId = config.logicalId || prefix + (i || "");
-      const graphqlLogicalId = "GraphQlApi" + (i || "");
+    configs.forEach(config => {
+      const urlLogicalId = getGqlAPIUrl(config);
       resources[urlLogicalId] = {
-        Value: { "Fn::GetAtt": [graphqlLogicalId, "GraphQLUrl"] }
+        Value: { "Fn::GetAtt": [getGqlEndpointName(config), "GraphQLUrl"] }
       };
     });
     return resources;
@@ -474,10 +460,9 @@ class ServerlessAppsyncPlugin {
   }
   getMultipleApiKeyOutputs(configs) {
     const resources = {};
-    const prefix = "GraphQlApiKeyDefault";
-    configs.forEach((config, i) => {
+    configs.forEach(config => {
       let resource = {};
-      const logicalId = prefix + (i || "");
+      const logicalId = getAPIKeyResourceName(config);
       if (config.authenticationType !== "API_KEY") {
         return {};
       } else {
@@ -507,8 +492,9 @@ class ServerlessAppsyncPlugin {
     return name.replace(/[^a-zA-Z0-9]/g, "");
   }
 
-  getDataSourceCfnName(name) {
-    return `GraphQlDs${this.getCfnName(name)}`;
+  getDataSourceCfnName(config, name) {
+    const prefix = getDataSourceName(config);
+    return `${prefix}${this.getCfnName(name)}`;
   }
 
   processTemplate(template, config) {
