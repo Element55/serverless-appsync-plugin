@@ -71,9 +71,44 @@ class ServerlessAppsyncPlugin {
 
     return `${schema} ${awsTypes}`;
   }
+  getSchemas() {
+    const apiConfigs = this.loadConfig();
+    return apiConfigs.map(config => {
+      let { schema } = config;
+      const awsTypes = `
+        scalar AWSDate
+        scalar AWSTime
+        scalar AWSDateTime
+        scalar AWSTimestamp
+        scalar AWSEmail
+        scalar AWSJSON
+        scalar AWSURL
+        scalar AWSPhone
+        scalar AWSIPAddress
+      `;
 
+      return `${schema} ${awsTypes}`;
+    });
+  }
+  validateSchemas() {
+    const schemas = this.getSchemas();
+    schemas.forEach(schema => {
+      this.doValidateSchema(schema);
+    });
+  }
   validateSchema() {
+    if (this.isConfiguringMultipleApis()) {
+      this.validateSchemas();
+      return;
+    }
     const schema = this.getSchema();
+    this.doValidateSchema(schema);
+  }
+  isConfiguringMultipleApis() {
+    const config = this.loadConfig();
+    return Array.isArray(config);
+  }
+  doValidateSchema(schema) {
     const ast = buildASTSchema(parse(schema));
     const errors = validateSchema(ast);
     if (!errors.length) {
@@ -87,7 +122,6 @@ class ServerlessAppsyncPlugin {
       "Cannot proceed invalid graphql SDL"
     );
   }
-
   deleteGraphQLEndpoint() {
     const config = this.loadConfig();
     const { apiId } = config;
@@ -133,51 +167,54 @@ class ServerlessAppsyncPlugin {
     Object.assign(resources, this.getGraphQLSchemaResource(config));
     Object.assign(resources, this.getDataSourceResources(config));
     Object.assign(resources, this.getResolverResources(config));
-
     const outputs = this.serverless.service.provider
       .compiledCloudFormationTemplate.Outputs;
     Object.assign(outputs, this.getGraphQlApiOutputs(config));
     Object.assign(outputs, this.getApiKeyOutputs(config));
+    const p = path.join(process.cwd(), "appsync_resources.json");
+    fs.writeFileSync(p, JSON.stringify(resources));
   }
-
-  getGraphQlApiEndpointResource(config) {
-    if (config.groups && Array.isArray(config.groups)) {
-      const prefix = "GraphQlApi";
-      const resource = {};
-      config.groups.forEach((apiConfig, i) => {
-        const logicalId = prefix + (i || "");
-        resource[logicalId] = {
-          Type: "AWS::AppSync::GraphQLApi",
-          Properties: {
-            Name: apiConfig.name,
-            AuthenticationType: apiConfig.authenticationType,
-            UserPoolConfig:
-              apiConfig.authenticationType !== "AMAZON_COGNITO_USER_POOLS"
-                ? undefined
-                : {
-                    AwsRegion: apiConfig.region,
-                    DefaultAction: apiConfig.userPoolConfig.defaultAction,
-                    UserPoolId: apiConfig.userPoolConfig.userPoolId
-                  },
-            OpenIDConnectConfig:
-              apiConfig.authenticationType !== "OPENID_CONNECT"
-                ? undefined
-                : {
-                    Issuer: apiConfig.openIdConnectConfig.issuer,
-                    ClientId: apiConfig.openIdConnectConfig.clientId,
-                    IatTTL: apiConfig.openIdConnectConfig.iatTTL,
-                    AuthTTL: apiConfig.openIdConnectConfig.authTTL
-                  },
-            LogConfig: !apiConfig.logConfig
+  getMultipleGraphQlApiEndpointResources(configs) {
+    const prefix = "GraphQlApi";
+    const resource = {};
+    configs.forEach((apiConfig, i) => {
+      const logicalId = apiConfig.logicalId || prefix + (i || "");
+      resource[logicalId] = {
+        Type: "AWS::AppSync::GraphQLApi",
+        Properties: {
+          Name: apiConfig.name,
+          AuthenticationType: apiConfig.authenticationType,
+          UserPoolConfig:
+            apiConfig.authenticationType !== "AMAZON_COGNITO_USER_POOLS"
               ? undefined
               : {
-                  CloudWatchLogsRoleArn: apiConfig.logConfig.loggingRoleArn,
-                  FieldLogLevel: apiConfig.logConfig.level
-                }
-          }
-        };
-      });
-      return resource;
+                  AwsRegion: apiConfig.region,
+                  DefaultAction: apiConfig.userPoolConfig.defaultAction,
+                  UserPoolId: apiConfig.userPoolConfig.userPoolId
+                },
+          OpenIDConnectConfig:
+            apiConfig.authenticationType !== "OPENID_CONNECT"
+              ? undefined
+              : {
+                  Issuer: apiConfig.openIdConnectConfig.issuer,
+                  ClientId: apiConfig.openIdConnectConfig.clientId,
+                  IatTTL: apiConfig.openIdConnectConfig.iatTTL,
+                  AuthTTL: apiConfig.openIdConnectConfig.authTTL
+                },
+          LogConfig: !apiConfig.logConfig
+            ? undefined
+            : {
+                CloudWatchLogsRoleArn: apiConfig.logConfig.loggingRoleArn,
+                FieldLogLevel: apiConfig.logConfig.level
+              }
+        }
+      };
+    });
+    return resource;
+  }
+  getGraphQlApiEndpointResource(config) {
+    if (this.isConfiguringMultipleApis(config)) {
+      return this.getMultipleGraphQlApiEndpointResources(config);
     }
     return {
       GraphQlApi: {
@@ -212,8 +249,30 @@ class ServerlessAppsyncPlugin {
       }
     };
   }
+  getMultipleApiKeyResources(configs) {
+    const resources = {};
+    const prefix = "GraphQlApiKeyDefault";
+    configs.forEach((config, i) => {
+      const logicalId = config.logicalId || prefix + (i || "");
+      if (config.authenticationType !== "API_KEY") {
+        return {};
+      }
 
+      resources[logicalId] = {
+        Type: "AWS::AppSync::ApiKey",
+        Properties: {
+          ApiId: { "Fn::GetAtt": ["GraphQlApi", "ApiId"] },
+          Description: "serverless-appsync-plugin: Default",
+          Expires: Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+        }
+      };
+    });
+    return resources;
+  }
   getApiKeyResources(config) {
+    if (this.isConfiguringMultipleApis()) {
+      return this.getMultipleApiKeyResources(config);
+    }
     if (config.authenticationType !== "API_KEY") {
       return {};
     }
@@ -228,8 +287,23 @@ class ServerlessAppsyncPlugin {
       }
     };
   }
-
+  getMultipleDataSourceResources(configs) {
+    let resources = {};
+    configs.forEach(config => {
+      resources = {
+        ...resources,
+        ...this.makeDataSourceResource(config)
+      };
+    });
+    return resources;
+  }
   getDataSourceResources(config) {
+    if (this.isConfiguringMultipleApis()) {
+      return this.getMultipleDataSourceResources(config);
+    }
+    return this.makeDataSourceResource(config);
+  }
+  makeDataSourceResource(config) {
     return config.dataSources.reduce((acc, ds) => {
       const resource = {
         Type: "AWS::AppSync::DataSource",
@@ -271,8 +345,25 @@ class ServerlessAppsyncPlugin {
       });
     }, {});
   }
-
+  getMultipleGraphQLSchemaResources(configs) {
+    const resources = {};
+    const prefix = "GraphQlSchema";
+    configs.forEach((config, i) => {
+      let logicalId = config.logicalId || prefix + (i || "");
+      resources[logicalId] = {
+        Type: "AWS::AppSync::GraphQLSchema",
+        Properties: {
+          Definition: config.schema,
+          ApiId: { "Fn::GetAtt": ["GraphQlApi", "ApiId"] }
+        }
+      };
+    });
+    return resources;
+  }
   getGraphQLSchemaResource(config) {
+    if (this.isConfiguringMultipleApis()) {
+      return this.getMultipleGraphQLSchemaResources(config);
+    }
     return {
       GraphQlSchema: {
         Type: "AWS::AppSync::GraphQLSchema",
@@ -283,8 +374,27 @@ class ServerlessAppsyncPlugin {
       }
     };
   }
-
+  getMultipleResolverResources(configs) {
+    let resources = {};
+    const prefix = "GraphQlSchema";
+    configs.forEach((config, i) => {
+      const logicalId = prefix + (i || "");
+      const thisResolver = this.makeResolverResource(config, logicalId);
+      console.log("This resolver>", thisResolver, logicalId);
+      resources = {
+        ...resources,
+        ...thisResolver
+      };
+    });
+    return resources;
+  }
   getResolverResources(config) {
+    if (this.isConfiguringMultipleApis()) {
+      return this.getMultipleResolverResources(config);
+    }
+    return this.makeResolverResource(config);
+  }
+  makeResolverResource(config, schemaName = "GraphQlSchema") {
     return config.mappingTemplates.reduce((acc, tpl) => {
       const reqTemplPath = path.join(
         config.mappingTemplatesLocation,
@@ -302,7 +412,7 @@ class ServerlessAppsyncPlugin {
           tpl.field
         )}`]: {
           Type: "AWS::AppSync::Resolver",
-          DependsOn: "GraphQlSchema",
+          DependsOn: schemaName,
           Properties: {
             ApiId: { "Fn::GetAtt": ["GraphQlApi", "ApiId"] },
             TypeName: tpl.type,
@@ -323,16 +433,50 @@ class ServerlessAppsyncPlugin {
       });
     }, {});
   }
-
+  getMultipleGraphQlApiOutputs() {
+    const configs = this.loadConfig();
+    const resources = {};
+    const prefix = "GraphQlApiUrl";
+    configs.forEach((config, i) => {
+      const urlLogicalId = config.logicalId || prefix + (i || "");
+      const graphqlLogicalId = "GraphQlApi" + (i || "");
+      resources[urlLogicalId] = {
+        Value: { "Fn::GetAtt": [graphqlLogicalId, "GraphQLUrl"] }
+      };
+    });
+    return resources;
+  }
   getGraphQlApiOutputs() {
+    if (this.isConfiguringMultipleApis()) {
+      return this.getMultipleGraphQlApiOutputs();
+    }
     return {
       GraphQlApiUrl: {
         Value: { "Fn::GetAtt": ["GraphQlApi", "GraphQLUrl"] }
       }
     };
   }
-
+  getMultipleApiKeyOutputs(configs) {
+    const resources = {};
+    const prefix = "GraphQlApiKeyDefault";
+    configs.forEach((config, i) => {
+      let resource = {};
+      const logicalId = prefix + (i || "");
+      if (config.authenticationType !== "API_KEY") {
+        return {};
+      } else {
+        resource = {
+          Value: { "Fn::GetAtt": [logicalId, "ApiKey"] }
+        };
+      }
+      resources[logicalId] = resource;
+    });
+    return resources;
+  }
   getApiKeyOutputs(config) {
+    if (this.isConfiguringMultipleApis()) {
+      return this.getMultipleApiKeyOutputs(config);
+    }
     if (config.authenticationType !== "API_KEY") {
       return {};
     }

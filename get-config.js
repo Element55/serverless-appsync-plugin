@@ -6,8 +6,7 @@ const objectToArrayWithNameProp = pipe(
   mapObjIndexed((item, key) => merge({ name: key }, item)),
   values
 );
-
-module.exports = (config, provider, servicePath) => {
+const configureAPI = (config, provider, servicePath) => {
   if (
     !(
       config.authenticationType === "API_KEY" ||
@@ -56,7 +55,6 @@ module.exports = (config, provider, servicePath) => {
   const mappingTemplatesLocation =
     config.mappingTemplatesLocation || "mapping-templates";
   const mappingTemplates = config.mappingTemplates || [];
-
   const schemaPath = path.join(servicePath, config.schema || "schema.graphql");
 
   const schemaContent = fs.readFileSync(schemaPath, {
@@ -64,7 +62,6 @@ module.exports = (config, provider, servicePath) => {
   });
 
   const dataSources = objectToArrayWithNameProp(config.dataSources);
-
   return {
     name: config.name || "api",
     apiId: config.apiId,
@@ -83,4 +80,14 @@ module.exports = (config, provider, servicePath) => {
     substitutions: config.substitutions || {},
     groups: config.groups
   };
+};
+module.exports = (config, provider, servicePath) => {
+  if (Array.isArray(config)) {
+    const newConfig = config.map(thisConfig => {
+      return configureAPI(thisConfig, provider, servicePath);
+    });
+    return newConfig;
+  }
+  const newConfig = configureAPI(config, provider, servicePath);
+  return newConfig;
 };
